@@ -1,0 +1,4 @@
+# file: /Users/jyothika/Desktop/myFirstProj/noma_dataset_generator.py
+# hypothesis_version: 6.141.1
+
+[0.001, 0.01, 1.0, 2.0, 10000]
