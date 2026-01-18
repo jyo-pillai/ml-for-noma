@@ -4,12 +4,19 @@
 
 The NOMA Dataset Generator is a Python-based system that produces training data for Machine Learning models optimizing power allocation in Downlink NOMA networks. The system implements the "Sum Rate Maximization Under SIC Constraint" algorithm to generate 10,000 samples of channel conditions, optimal power allocations, and corresponding sum rates.
 
+**Key Design Decisions:**
+- **Configurable User Count**: Supports both M=3 (default) and M=4 users to accommodate different network scenarios
+- **Rayleigh Fading Model**: Uses complex Gaussian distribution h_m ~ CN(0, d^(-β)) to model realistic wireless channels
+- **Dual-Bound Optimization**: Implements Algorithm 1 with equal allocation bound (α') and SIC constraint bound (α'') for mathematically optimal power allocation
+- **Robust Error Handling**: Includes validation and retry logic to ensure dataset quality and numerical stability
+
 The core workflow follows these steps:
-1. Generate random channel coefficients using Rayleigh fading
-2. Sort users by channel gain (strongest to weakest)
-3. Compute optimal power allocation using a dual-bound optimization (Algorithm 1)
-4. Calculate SINR and sum rate for each configuration
-5. Store results in a structured CSV dataset
+1. Generate random channel coefficients using Rayleigh fading model
+2. Sort users by channel gain (strongest to weakest) to establish SIC decoding order
+3. Compute optimal power allocation using dual-bound optimization (Algorithm 1)
+4. Calculate SINR and sum rate for each configuration using NOMA formulas
+5. Validate samples for mathematical correctness
+6. Store results in structured CSV dataset with appropriate column naming
 
 ## Architecture
 
@@ -45,12 +52,12 @@ The system follows a procedural architecture with clear separation of concerns:
 
 ### 1. Configuration Module
 
-**Purpose:** Store and provide access to system parameters.
+**Purpose:** Store and provide access to system parameters with support for both M=3 and M=4 configurations.
 
 **Interface:**
 ```python
 class NOMAConfig:
-    M: int              # Number of users (3 or 4)
+    M: int              # Number of users (3 or 4, default: 3)
     P: float            # Total transmit power (1.0 W)
     N0: float           # Noise power (0.001 W)
     Pg: float           # Power gap for SIC (0.01 W)
@@ -58,15 +65,25 @@ class NOMAConfig:
     path_loss_exp: float # Path loss exponent β
 ```
 
+**Design Rationale:** 
+- Default M=3 aligns with most common NOMA scenarios while M=4 support enables more complex network research
+- Fixed power and noise values (P=1.0W, N0=0.001W, Pg=0.01W) match standard NOMA literature
+- N_samples=10,000 provides sufficient data for ML training while remaining computationally feasible
+
 ### 2. Channel Generator
 
-**Purpose:** Generate and sort channel coefficients according to Rayleigh fading.
+**Purpose:** Generate and sort channel coefficients according to Rayleigh fading model to establish SIC decoding order.
 
 **Interface:**
 ```python
 def generate_channels(config: NOMAConfig) -> np.ndarray:
     """
-    Generate M channel gains sorted in descending order.
+    Generate M channel gains sorted in descending order using Rayleigh fading.
+    
+    Implementation:
+    - Generate complex coefficients: h_m ~ CN(0, d^(-β))
+    - Compute channel gains: g_m = |h_m|^2
+    - Sort in descending order for SIC decoding
     
     Returns:
         h_gains: Array of shape (M,) with |h_1|^2 >= |h_2|^2 >= ... >= |h_M|^2
@@ -74,10 +91,16 @@ def generate_channels(config: NOMAConfig) -> np.ndarray:
 ```
 
 **Implementation Details:**
-- Generate complex channel coefficients: h_m ~ CN(0, d^(-β))
+- Generate complex channel coefficients using Rayleigh fading: h_m ~ CN(0, d^(-β))
 - Compute channel gains: g_m = |h_m|^2
-- Sort in descending order (strongest user first)
-- Return sorted gains
+- Sort in descending order (strongest user first) to establish SIC decoding order
+- User 1 becomes strongest user, User M becomes weakest user
+- Return sorted gains for power allocation computation
+
+**Design Rationale:**
+- Rayleigh fading model reflects realistic wireless channel conditions
+- Descending sort order is critical for NOMA SIC operation - stronger users must be decoded first
+- Channel gain sorting determines user indexing throughout the system
 
 ### 3. Power Allocation Optimizer
 
@@ -119,17 +142,28 @@ def compute_alpha_double_prime(h_gains: np.ndarray, config: NOMAConfig) -> np.nd
     
     The linear system encodes:
     - Sum constraint: Σ α''_i = 1
-    - SIC constraints for m=2 to M:
-      (2·Σ(α''_i, i=1..m-1) + Σ(α''_i, i=m+1..M))·P·|h_(m-1)|^2 = P·|h_(m-1)|^2 - P_g
+    - SIC constraints for i=1 to M-1:
+      α_i - Σ(α_k for k=i+1 to M) = P_g / (P·|h_i|^2)
+    
+    This ensures sufficient power difference between users for successful SIC.
     
     Returns:
         alpha_double_prime: Array of shape (M,) satisfying SIC constraints
+        None: If linear system is singular (degenerate channel conditions)
     """
 ```
 
 **Matrix Construction:**
 - Row 1: Sum constraint [1, 1, 1, ..., 1] · α'' = 1
-- Rows 2 to M: SIC constraints for each user boundary
+- Row i (i=2 to M): SIC constraint for user boundary i-1
+  - Coefficient +1 at position i-1
+  - Coefficients -1 at positions i to M-1
+  - RHS: P_g / (P·|h_{i-1}|^2)
+
+**Design Rationale:**
+- SIC constraints ensure power gap P_g between consecutive users for successful interference cancellation
+- Linear system approach provides exact mathematical solution
+- Singular matrix handling prevents crashes from degenerate channel conditions
 
 **3c. Final Selection**
 ```python
@@ -168,16 +202,23 @@ def compute_sum_rate(h_gains: np.ndarray, alpha: np.ndarray, config: NOMAConfig)
 ```python
 def compute_sinr(m: int, h_gains: np.ndarray, alpha: np.ndarray, config: NOMAConfig) -> float:
     """
-    Compute SINR for user m using NOMA formula:
+    Compute SINR for user m using downlink NOMA formula:
     
     γ_m = (α_m · P · |h_m|^2) / (|h_m|^2 · Σ(α_i · P, i=1..m-1) + σ²)
     
-    The interference term includes all users decoded before user m.
+    The interference term includes only users decoded before user m in SIC order.
+    For user 1 (strongest), interference = 0, denominator = σ² only.
     
     Returns:
-        sinr: Signal-to-Interference-plus-Noise Ratio for user m
+        sinr: Signal-to-Interference-plus-Noise Ratio for user m (≥ 0)
     """
 ```
+
+**Design Rationale:**
+- Interference term reflects downlink NOMA SIC decoding order
+- Users 1 to m-1 are decoded and removed before user m
+- Users m+1 to M are treated as noise (not decoded yet)
+- SINR clipping to ≥ 0 prevents numerical errors from causing negative values
 
 **4b. Rate Calculation**
 ```python
@@ -223,22 +264,34 @@ for i in range(N_samples):
 
 ### 6. Validation Module
 
-**Purpose:** Ensure generated samples are mathematically valid.
+**Purpose:** Ensure generated samples are mathematically valid and satisfy NOMA constraints.
 
 **Interface:**
 ```python
-def validate_sample(h_gains: np.ndarray, alpha: np.ndarray) -> bool:
+def validate_sample(h_gains: np.ndarray, alpha: np.ndarray, sum_rate: float) -> bool:
     """
-    Check if a sample satisfies basic constraints:
-    - All channel gains > 0
-    - All power allocations >= 0
-    - Sum of power allocations <= 1
-    - Channel gains are sorted descending
+    Check if a sample satisfies all NOMA constraints:
+    - All channel gains > 0 (physical realizability)
+    - All power allocations >= 0 (non-negativity constraint)
+    - Sum of power allocations <= 1 (total power constraint)
+    - Channel gains are sorted descending (SIC order requirement)
+    - Sum rate >= 0 (mathematical correctness)
     
     Returns:
-        is_valid: True if sample passes all checks
+        is_valid: True if sample passes all validation checks
     """
 ```
+
+**Validation Checks:**
+1. **Channel Gain Ordering**: h_gains[i] >= h_gains[i+1] for all i
+2. **Positivity**: All h_gains > 0 and all alpha >= 0
+3. **Power Constraint**: sum(alpha) <= 1.0 + numerical_tolerance
+4. **Rate Validity**: sum_rate >= 0
+
+**Design Rationale:**
+- Comprehensive validation prevents invalid samples from corrupting the dataset
+- Numerical tolerance (1e-6) accommodates floating-point precision errors
+- Early validation saves computation time by rejecting bad samples immediately
 
 ## Data Models
 
@@ -270,19 +323,33 @@ class NOMAample:
 
 ### Dataset Schema
 
-For M=3:
+**For M=3 (Default Configuration):**
 ```
 | h1_gain | h2_gain | h3_gain | alpha1 | alpha2 | alpha3 | Sum_Rate |
 |---------|---------|---------|--------|--------|--------|----------|
 | float   | float   | float   | float  | float  | float  | float    |
 ```
 
-For M=4:
+**For M=4 (Extended Configuration):**
 ```
 | h1_gain | h2_gain | h3_gain | h4_gain | alpha1 | alpha2 | alpha3 | alpha4 | Sum_Rate |
 |---------|---------|---------|---------|--------|--------|--------|--------|----------|
 | float   | float   | float   | float   | float  | float  | float  | float  | float    |
 ```
+
+**Column Naming Convention:**
+- `h{i}_gain`: Channel gain for user i (sorted strongest to weakest)
+- `alpha{i}`: Power allocation fraction for user i
+- `Sum_Rate`: Total achievable sum rate in bits/s/Hz
+
+**File Naming:**
+- Default output: `noma_training_data.csv`
+- No index column in CSV output for clean ML data loading
+
+**Design Rationale:**
+- Dynamic column generation based on M value ensures compatibility with both configurations
+- Consistent naming convention facilitates ML framework integration
+- CSV format provides universal compatibility across data science tools
 
 
 ## Correctness Properties
@@ -319,15 +386,15 @@ Based on the acceptance criteria analysis, we identify the following correctness
 
 ### Property 4: SIC Constraint Satisfaction
 
-*For any* generated sample with computed α'', for each user m from 2 to M, the SIC constraint must hold:
+*For any* generated sample with computed α'', for each user i from 1 to M-1, the SIC constraint must hold:
 
-(2·Σ(α''_i for i=1 to m-1) + Σ(α''_i for i=m+1 to M))·P·|h_(m-1)|^2 ≈ P·|h_(m-1)|^2 - P_g
+α_i - Σ(α_k for k=i+1 to M) ≈ P_g / (P·|h_i|^2)
 
 (within numerical tolerance ε = 1e-6)
 
 **Validates: Requirements 3.4**
 
-**Rationale:** This constraint ensures that there is sufficient power difference between users for SIC to work correctly. The power gap P_g is the minimum difference needed for successful interference cancellation.
+**Rationale:** This constraint ensures that there is sufficient power difference between consecutive users for SIC to work correctly. The power gap P_g is the minimum difference needed for successful interference cancellation. The corrected formula reflects the actual SIC constraint from the optimization problem.
 
 ### Property 5: Minimum Selection Correctness
 
@@ -371,13 +438,13 @@ The recomputed R_sum must match the stored Sum_Rate value (within numerical tole
 ### Numerical Stability
 
 **Linear System Singularity:**
-- **Issue:** The matrix A in the linear system A·α'' = B may be singular or ill-conditioned for certain channel realizations.
-- **Handling:** Wrap `numpy.linalg.solve()` in a try-except block. If `LinAlgError` is raised, skip the current sample and generate a new channel realization.
-- **Logging:** Count and report the number of skipped samples at the end of generation.
+- **Issue:** The matrix A in the linear system A·α'' = B may be singular or ill-conditioned for certain channel realizations (e.g., when users have identical channel gains).
+- **Handling:** Wrap `numpy.linalg.solve()` in a try-except block. If `LinAlgError` is raised, return None from `compute_alpha_double_prime()` and fallback to α' in the orchestrator function.
+- **Logging:** Count and report the number of samples that required fallback to equal allocation.
 
 **Division by Zero in SINR:**
 - **Issue:** For user 1 (strongest user), the interference term is zero. The denominator becomes σ² only.
-- **Handling:** This is expected behavior. Ensure σ² > 0 in configuration to prevent division by zero.
+- **Handling:** This is expected behavior. Ensure σ² > 0 in configuration (N0 = 0.001) to prevent division by zero.
 
 **Negative SINR:**
 - **Issue:** Due to numerical errors, SINR might become slightly negative (e.g., -1e-15).
@@ -387,13 +454,13 @@ The recomputed R_sum must match the stored Sum_Rate value (within numerical tole
 
 **Negative α Values:**
 - **Issue:** The linear system solution might produce negative α'' values for certain channel conditions.
-- **Handling:** After computing α*, validate that all elements are ≥ 0. If validation fails, skip the sample.
+- **Handling:** After computing α'', validate that all elements are ≥ 0. If validation fails, return None and fallback to α'.
 
 **Sum Exceeds 1:**
 - **Issue:** Due to numerical errors, Σ(α*) might slightly exceed 1.
-- **Handling:** If Σ(α*) > 1 + ε (where ε = 1e-6), skip the sample. If 1 < Σ(α*) ≤ 1 + ε, normalize: α* = α* / Σ(α*).
+- **Handling:** If Σ(α*) > 1 + ε (where ε = 1e-6), reject the sample. If 1 < Σ(α*) ≤ 1 + ε, normalize: α* = α* / Σ(α*).
 
-### Sample Validation
+### Sample Validation and Retry Logic
 
 **Validation Function:**
 ```python
@@ -410,7 +477,7 @@ def validate_sample(h_gains, alpha, sum_rate):
     if np.sum(alpha) > 1 + 1e-6:
         return False
     
-    # Check sum rate is positive
+    # Check sum rate is non-negative
     if sum_rate < 0:
         return False
     
@@ -420,21 +487,12 @@ def validate_sample(h_gains, alpha, sum_rate):
 **Retry Logic:**
 - Maximum retries per sample: 10
 - If 10 consecutive samples fail validation, raise an error (indicates systematic problem)
+- Skip invalid samples and continue generation to reach target N_samples
 
-### Edge Cases
-
-**All Users Have Same Channel Gain:**
-- **Issue:** If h_1 = h_2 = ... = h_M, the SIC constraint matrix becomes singular.
-- **Probability:** Extremely low with continuous Rayleigh distribution.
-- **Handling:** Caught by linear system solver error handling.
-
-**Very Weak Channels:**
-- **Issue:** If all channel gains are very small, α'' might require more power than available.
-- **Handling:** The min(α', α'') selection will choose α', resulting in equal power allocation.
-
-**Very Strong Channels:**
-- **Issue:** If channel gains are very large, numerical overflow in SINR calculation.
-- **Handling:** Use `np.float64` precision. For extreme cases, clip SINR to a maximum value (e.g., 1e10) before computing log.
+**Design Rationale:**
+- Robust error handling ensures dataset quality without crashing the generation process
+- Fallback mechanisms (α'' → α') provide graceful degradation for edge cases
+- Comprehensive validation catches both mathematical and numerical errors
 
 ## Testing Strategy
 
@@ -541,7 +599,7 @@ def test_sic_constraint(M):
     """
     Feature: noma-dataset-generator, Property 4: SIC Constraint Satisfaction
     
-    For any generated sample, α'' must satisfy SIC constraints.
+    For any generated sample, α'' must satisfy corrected SIC constraints.
     """
     config = NOMAConfig(M=M)
     h_gains = generate_channels(config)
@@ -549,15 +607,13 @@ def test_sic_constraint(M):
     try:
         alpha_double_prime = compute_alpha_double_prime(h_gains, config)
         
-        # Check SIC constraint for each user m from 2 to M
-        for m in range(2, M + 1):
-            # Sum of alphas before user m
-            sum_before = np.sum(alpha_double_prime[:m-1])
-            # Sum of alphas after user m
-            sum_after = np.sum(alpha_double_prime[m:]) if m < M else 0
+        # Check SIC constraint for each user i from 1 to M-1
+        for i in range(M - 1):
+            # Sum of alphas after user i
+            sum_after = np.sum(alpha_double_prime[i+1:]) if i < M-1 else 0
             
-            lhs = (2 * sum_before + sum_after) * config.P * h_gains[m-2]
-            rhs = config.P * h_gains[m-2] - config.Pg
+            lhs = alpha_double_prime[i] - sum_after
+            rhs = config.Pg / (config.P * h_gains[i])
             
             assert np.isclose(lhs, rhs, atol=1e-6)
     except np.linalg.LinAlgError:
@@ -687,10 +743,17 @@ pytest tests/properties/ -v --hypothesis-seed=42 --hypothesis-iterations=1000
 
 **During Dataset Generation:**
 - Run validation function on each sample before adding to DataFrame
-- Log statistics: number of samples generated, number skipped, reasons for skipping
+- Log statistics: number of samples generated, number skipped, number requiring fallback to α'
 - If skip rate > 10%, warn user about potential configuration issues
+- Track and report fallback rate (α'' → α') for transparency
 
 **Post-Generation Validation:**
 - Run property tests on a random sample of 100 rows from the generated CSV
 - Verify all properties hold for the stored data
 - Generate summary statistics: mean/std of channel gains, power allocations, sum rates
+- Validate that CSV file has exactly N_samples rows and correct column structure
+
+**Design Rationale:**
+- Continuous monitoring ensures dataset quality throughout generation
+- Post-generation validation provides final quality assurance
+- Statistical summaries help identify potential issues or biases in the generated data

@@ -52,7 +52,7 @@ This document specifies the requirements for a Python-based training dataset gen
 1. WHEN computing power allocation, THE Dataset_Generator SHALL calculate the first bound α'_m = 1/M for all users
 2. WHEN computing the second bound α'', THE Dataset_Generator SHALL construct a linear system A·α'' = B
 3. THE Dataset_Generator SHALL enforce the sum constraint: Σ(α''_i) = 1 for i=1 to M
-4. FOR each user m from 2 to M, THE Dataset_Generator SHALL enforce the SIC constraint: (2·Σ(α''_i for i=1 to m-1) + Σ(α''_i for i=m+1 to M))·P·|h_(m-1)|^2 = P·|h_(m-1)|^2 - P_g
+4. FOR each user i from 1 to M-1, THE Dataset_Generator SHALL enforce the SIC constraint: α_i - Σ(α_k for k=i+1 to M) = P_g / (P·|h_i|^2)
 5. WHEN solving the linear system, THE Dataset_Generator SHALL use numpy.linalg.solve
 6. WHEN determining final power allocation, THE Dataset_Generator SHALL compute α*_m = min(α'_m, α''_m) for each user m
 
