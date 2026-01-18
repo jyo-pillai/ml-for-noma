@@ -31,13 +31,13 @@ The optimal allocation is derived as: $\alpha^*_m = \min(\alpha'_m, \alpha''_m)$
 
 2.  **SINR Calculation (Eq. 1 in Paper):**
     For user $m$, Signal-to-Interference-plus-Noise Ratio is:
-    $$ \gamma_m = \frac{\alpha_m P |h_m|^2}{ |h_m|^2 \sum_{i=1}^{m-1} \alpha_i P + \sigma^2 } $$
+    $ \gamma_m = \frac{\alpha_m P |h_m|^2}{ |h_m|^2 \sum_{i=1}^{m-1} \alpha_i P + \sigma^2 } $
     *Note: In Downlink NOMA, User $m$ performs SIC for weaker users ($m+1 \dots M$) 
     but treats stronger users ($1 \dots m-1$) as noise/interference.*
 
 3.  **SIC Constraint (Eq. 3 in Paper):**
     To ensure successful decoding, the signal power difference must exceed the Power Gap ($P_g$):
-    $$ \alpha_m P |h_{m-1}|^2 - \sum_{i=1}^{m-1} \alpha_i P |h_{m-1}|^2 \ge P_g, \quad \text{for } m=2 \dots M $$
+    $ \alpha_m P |h_{m-1}|^2 - \sum_{i=1}^{m-1} \alpha_i P |h_{m-1}|^2 \ge P_g, \quad \text{for } m=2 \dots M $
 
 4.  **Matrix Formulation for $\alpha''$ (Eq. 9 & 10 in Paper):**
     The upper bound $\alpha''$ is found by solving the linear system $A \cdot \alpha'' = B$, 
@@ -140,65 +140,74 @@ def compute_alpha_prime(M: int) -> np.ndarray:
     return np.ones(M) / M
 
 
-
 def compute_alpha_double_prime(h_gains: np.ndarray, config: NOMAConfig) -> np.ndarray:
     """
-    Compute SIC constraint bound (Algorithm 1 - second bound).
+    Compute SIC constraint bound by solving linear system A·α'' = B.
     
-    This function solves a linear system A·α'' = B that encodes:
-    1. Sum constraint: All power fractions must sum to 1
-    2. SIC constraints: Ensure sufficient power difference for successful interference cancellation
+    **CORRECTED SIC CONSTRAINT FORMULA:**
+    For user i (1-based indexing from paper): α_i - Σ(α_k, k=i+1..M) = Pg / (P · |h_i|²)
     
-    The SIC constraint for user m ensures that after decoding users 1 to m-1,
-    there is sufficient power remaining (power gap P_g) for user m-1 to be decoded.
+    This constraint ensures sufficient power difference between users for successful
+    Successive Interference Cancellation (SIC). The power gap Pg is the minimum
+    difference required for the receiver to decode and cancel interference.
     
-    Formula from paper (Algorithm 1 - SIC constraint bound):
-    - Row 1: Σ(α''_i) = 1  [Sum constraint]
-    - Rows 2 to M: For each user m from 2 to M:
-      (2·Σ(α''_i, i=1..m-1) + Σ(α''_i, i=m+1..M))·P·|h_(m-1)|^2 = P·|h_(m-1)|^2 - P_g
-    
-    The SIC constraint ensures that the interference power plus the desired signal power
-    for users m to M does not exceed the available power after accounting for the
-    power gap needed for successful SIC decoding.
+    **Matrix Construction:**
+    - Row 0: Sum constraint [1, 1, ..., 1] · α'' = 1
+    - Row i (1 to M-1): SIC constraint for user i
+      - Coefficient +1 at position i-1 (user i in 0-based indexing)
+      - Coefficients -1 at positions i to M-1 (users i+1 to M in 0-based indexing)
+      - RHS = Pg / (P · |h_i|²)
     
     Args:
         h_gains: Sorted channel gains in descending order, shape (M,)
-        config: NOMAConfig object containing P, Pg, and M
+        config: NOMAConfig object containing system parameters (P, Pg, M)
         
     Returns:
-        alpha_double_prime: Array of shape (M,) satisfying SIC constraints,
-                           or None if the linear system is singular
-    """
-
-    """
-    Returns SIC constraint bound (alpha'') by solving linear system A * alpha = B.
-    Derivation from Paper Eq (8), (9), (10).
-    Ensures that for every user, the power difference is sufficient for SIC.
+        alpha_double_prime: SIC constraint bound, shape (M,) or None if singular matrix
     """
     M = config.M
+    P = config.P
+    Pg = config.Pg
+    
+    # Matrix A construction (M×M)
     A = np.zeros((M, M))
     B = np.zeros(M)
     
-    # Constraint 1: Sum of alphas = 1 (Eq. 4c active constraint)
+    # Row 0: Sum constraint (Σα = 1)
     A[0, :] = 1.0
     B[0] = 1.0
     
-    # Constraint 2: SIC requirements for users 2 to M (Eq. 8 in paper)
-    # Formula: (2*Sum(prev) + Sum(next)) * P * |h_{m-1}|^2 = P*|h_{m-1}|^2 - Pg
-    for m in range(1, M):
-        # Coefficients for sum(alpha_1 ... alpha_{m-1})
-        A[m, :m] = 2.0 * config.P * h_gains[m-1]
+    # Rows 1 to M-1: SIC constraints
+    # For user i (1-based from paper), which is index i-1 in 0-based Python:
+    # α_i - Σ(α_k, k=i+1..M) = Pg / (P · |h_i|²)
+    for row in range(1, M):
+        user_i = row  # User i in 1-based indexing (1 to M-1)
+        user_i_idx = user_i - 1  # User i in 0-based indexing (0 to M-2)
         
-        # Coefficients for sum(alpha_m ... alpha_M)
-        A[m, m:] = config.P * h_gains[m-1] 
+        # Coefficient +1 at position i-1 (user i in 0-based indexing)
+        A[row, user_i_idx] = 1.0
         
-        B[m] = config.P * h_gains[m-1] - config.Pg
+        # Coefficients -1 at positions i to M-1 (users i+1 to M in 0-based indexing)
+        if user_i < M:  # If there are users after user i
+            A[row, user_i:] = -1.0
+            
+        # Vector B: Pg / (P · |h_i|²)
+        # h_gains[user_i_idx] corresponds to |h_i|² for user i
+        B[row] = Pg / (P * h_gains[user_i_idx])
 
+    # Solve linear system A · α'' = B
     try:
-        return np.linalg.solve(A, B)
+        alpha_double_prime = np.linalg.solve(A, B)
+        
+        # Safety check: if any α'' < 0, fallback to α'
+        if np.any(alpha_double_prime < 0):
+            return None
+            
+        return alpha_double_prime
+        
     except np.linalg.LinAlgError:
+        # Return None for singular matrix (will fallback to α')
         return None
-    
 
 
 def select_alpha_star(alpha_prime: np.ndarray, alpha_double_prime: np.ndarray) -> np.ndarray:
@@ -223,7 +232,6 @@ def select_alpha_star(alpha_prime: np.ndarray, alpha_double_prime: np.ndarray) -
         alpha_star: Optimal power allocation, shape (M,)
     """
     return np.minimum(alpha_prime, alpha_double_prime)
-
 
 
 def compute_power_allocation(h_gains: np.ndarray, config: NOMAConfig) -> np.ndarray:
@@ -273,7 +281,6 @@ def compute_power_allocation(h_gains: np.ndarray, config: NOMAConfig) -> np.ndar
     alpha_star = select_alpha_star(alpha_prime, alpha_double_prime)
     
     return alpha_star
-
 
 
 def compute_sinr(m: int, h_gains: np.ndarray, alpha: np.ndarray, config: NOMAConfig) -> float:
@@ -333,7 +340,6 @@ def compute_sum_rate(h_gains: np.ndarray, alpha: np.ndarray, config: NOMAConfig)
     return total_rate
 
 
-
 def validate_sample(h_gains: np.ndarray, alpha: np.ndarray, sum_rate: float) -> bool:
     """
     Validates a generated data sample against physical and logical constraints.
@@ -366,7 +372,6 @@ def validate_sample(h_gains: np.ndarray, alpha: np.ndarray, sum_rate: float) -> 
         return False
         
     return True
-
 
 
 def generate_dataset(config: NOMAConfig) -> pd.DataFrame:
@@ -437,7 +442,6 @@ def parse_args():
     return parser.parse_args()
 
 
-
 def main():
     """Main execution block."""
     args = parse_args()
@@ -455,3 +459,7 @@ def main():
         print(df.describe().loc[['mean', 'std', 'min', 'max']])
         print("\nSample Rows:")
         print(df.head())
+
+
+if __name__ == "__main__":
+    main()
