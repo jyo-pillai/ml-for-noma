@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Analyze the alpha allocation behavior to understand why the pattern is different than expected.
+Analyze the alpha allocation behavior
 """
 
 import pandas as pd

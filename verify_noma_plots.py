@@ -25,17 +25,15 @@ import matplotlib.pyplot as plt
 from dataclasses import dataclass
 
 # Import corrected power allocation functions
-from noma_corrected import (
+from noma_dataset_generator import (
     NOMAConfig,
     generate_channels,
-    compute_power_allocation
-)
-
-# Import SINR and rate computation from main module
-from noma_dataset_generator import (
+    compute_power_allocation,
     compute_sinr,
     compute_rate
 )
+
+
 
 
 def compute_sum_rate(h_gains: np.ndarray, alpha: np.ndarray, config: NOMAConfig) -> float:

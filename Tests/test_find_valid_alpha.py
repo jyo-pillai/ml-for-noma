@@ -32,7 +32,7 @@ def test_find_valid_alpha():
             print(f"  All equal to 1/M? {np.allclose(alpha_star, 1/config.M)}")
             print()
             
-            if valid_count >= 5:  # Show first 5 valid cases
+            if valid_count >= 100:  # Show first 5 valid cases
                 break
     
     print(f"Found {valid_count} valid cases out of {total_count} trials ({valid_count/total_count*100:.1f}%)")

@@ -31,9 +31,10 @@ def compute_alpha_prime(M: int) -> np.ndarray:
 
 def compute_alpha_double_prime(h_gains: np.ndarray, config: NOMAConfig) -> np.ndarray:
     """
-    CORRECTED SIC constraint bound implementation.
+    Compute SIC constraint bound by solving linear system A·α'' = B.
     
-    SIC constraint: α_i - Σ(α_k, k=i+1..M) = Pg / (P · |h_i|²) for i=1 to M-1
+    This constructs Matrix A (Eq 9) and Matrix B (Eq 10) derived from 
+    the SIC constraint simplification in Eq 8 of the referenced paper.
     """
     M = config.M
     P = config.P
@@ -43,24 +44,31 @@ def compute_alpha_double_prime(h_gains: np.ndarray, config: NOMAConfig) -> np.nd
     A = np.zeros((M, M))
     B = np.zeros(M)
     
-    # Row 0: Sum constraint (Σα = 1)
+    # Row 0: Sum constraint (Σα = 1) from constraint (4c)
     A[0, :] = 1.0
     B[0] = 1.0
     
-    # Rows 1 to M-1: SIC constraints
+    # Rows 1 to M-1: SIC constraints based on Eq 8, 9, 10
     for row in range(1, M):
-        user_i = row  # User i in 1-based indexing (1 to M-1)
-        user_i_idx = user_i - 1  # User i in 0-based indexing (0 to M-2)
+        m = row + 1  # user index m (1-based, going from 2 to M)
         
-        # Coefficient +1 at position i-1 (user i in 0-based indexing)
-        A[row, user_i_idx] = 1.0
+        # The channel gain for previous user |h_{m-1}|^2
+        # Note: m is 1-based, so m-1 is the previous user. 
+        # In 0-based Python indexing, this is (m-1) - 1 = m-2
+        h_m_minus_1_sq = h_gains[m - 2]
         
-        # Coefficients -1 at positions i to M-1 (users i+1 to M in 0-based indexing)
-        if user_i < M:
-            A[row, user_i:] = -1.0
+        # 1. Coefficients for stronger users: 2 * P * |h_{m-1}|^2
+        A[row, 0:(m-1)] = 2 * P * h_m_minus_1_sq
+        
+        # 2. Coefficient for current user m: 0
+        A[row, m-1] = 0.0
+        
+        # 3. Coefficients for weaker users: P * |h_{m-1}|^2
+        if m < M:
+            A[row, m:] = P * h_m_minus_1_sq
             
-        # Vector B: Pg / (P · |h_i|²)
-        B[row] = Pg / (P * h_gains[user_i_idx])
+        # 4. Vector B value: P * |h_{m-1}|^2 - Pg
+        B[row] = P * h_m_minus_1_sq - Pg
 
     # Solve linear system A · α'' = B
     try:
